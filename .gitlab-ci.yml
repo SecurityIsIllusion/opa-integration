@@ -1,0 +1,117 @@
+image:
+  name: inno/opa-docker:v1
+  entrypoint:
+    - '/usr/bin/env'
+    - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+variables:
+  AWS_DEFAULT_REGION: us-west-1
+  AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+  AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+  #AWS_SESSION_TOKEN: $AWS_SESSION_TOKEN
+
+
+before_script:
+  - rm -rf .terraform
+  #- export TF_LOG=TRACE
+  - terraform --version
+  - opa version
+  - echo "Do your deploy here"
+ # - cd $CI_PROJECT_DIR
+ # - export http_proxy="http://xxx.145.xx.x:xxxx"
+ # - export https_proxy="$http_proxy"
+ # - export no_proxy="127.0.0.1, localhost, .companyxxx.com, .companyxxx.net"
+ # - export HTTP_PROXY="$http_proxy"
+ # - export HTTPS_PROXY="$http_proxy"
+ # - export NO_PROXY="$no_proxy"
+  - opa version
+  - export AWS_ACCESS_KEY_ID
+  - export AWS_SECRET_ACCESS_KEY
+ # - export AWS_SESSION_TOKEN
+  - terraform init
+
+stages:
+  - validate
+  - plan
+  - compliance
+  - apply
+#  - destroy
+
+validate:
+  stage: validate
+  script:
+    - terraform validate
+  tags:
+    - docker
+
+plan:
+  stage: plan
+  script:
+    #- terraform plan -out "planfile"
+    - terraform validate
+    - terraform plan --out tfplan.binary
+  dependencies:
+    - validate
+  artifacts:
+    paths:
+      - tfplan.binary
+  tags:
+    - docker
+ 
+#compliance validation. 
+compliance:
+  stage: compliance
+  script:
+    - terraform show -json tfplan.binary > tfplan.json
+    - rm -rf output
+    - mkdir output/
+    #clone poa policies repo into docker
+   # - git clone https://gitlab-ci-token:${CI_JOB_TOKEN}@policies repo path link/opa-policies.git
+    #- ls opa-policies
+    #refer to local rego policy
+    #- ./opa eval --format pretty --data terraform.rego --input tfplan.json "data.terraform.analysis.authz"
+    - opa eval --format pretty --data terraform.rego --input tfplan.json "data.terraform.analysis.score" > output/score.txt
+    - echo $output/score.txt
+    - opa eval --format pretty --data terraform.rego --input tfplan.json "data.terraform.analysis.authz" > output/result.txt
+    - echo $output/result.txt
+    #refer to cloned repo rego policy
+    #- opa eval --format pretty --data opa-policies/s3-validate-ext.rego --input tfplan.json "data.terraform.analysis.score" > output/score.txt
+    #- opa eval --format pretty --data opa-policies/s3-validate-ext.rego --input tfplan.json "data.terraform.analysis.authz" > output/result.txt
+    - ls -a
+    - mapfile compliance_flag  < output/result.txt 
+    - echo $compliance_flag
+    - if [ $compliance_flag == 'false' ]; then exit 1; else exit 0; fi
+  
+  #caching is not really needed in this case, just showcasing if we need to use the results flag in the apply stage. 
+  cache:
+    key: compliance-cache
+    paths: 
+      - output/
+  dependencies:
+    - plan
+  tags:
+    - docker
+
+apply:
+  stage: apply
+  script:
+    - ls -l
+    - terraform apply -auto-approve 
+  cache:
+    key: compliance-cache
+    paths: 
+      - output/
+  dependencies:
+    - compliance
+  #when: manual
+  tags:
+    - docker
+    
+#destroy:
+#  stage:  destroy
+#  script:
+#    -  terraform destroy -auto-approve
+#  dependencies:
+#    - apply
+#  tags:
+#    - docker
